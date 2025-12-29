@@ -1,0 +1,7 @@
+exports/
+vendor/
+composer.lock
+.DS_Store
+*.log
+*.tmp
+.vscode
