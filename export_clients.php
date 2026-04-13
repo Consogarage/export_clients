@@ -44,7 +44,6 @@ class Export_Clients extends Module
         if (
             !parent::install() ||
             !$this->registerHook('actionValidateOrder') ||
-            !$this->registerHook('displayBackOfficeHeader') ||
             !$this->installTab()
         ) {
             return false;
