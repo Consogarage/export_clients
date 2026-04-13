@@ -170,13 +170,17 @@ class ExportClientsGenerator
             ? Tools::substr(preg_replace('/\s+/', '', (string) $address->dni), 0, 14)
             : '';
 
+        $raisonSociale = !empty($customer->company)
+            ? Tools::strtoupper(Tools::substr((string) $customer->company, 0, 40))
+            : '';
+
         $values = [
-            'A' => 'C',
-            'B' => str_pad((string) (int) $customer->id, 8, '0', STR_PAD_LEFT),
-            'C' => $nomAbrege,
-            'D' => $libelleInterne,
-            'E' => '',
-            'F' => '',
+            'A'  => 'C',
+            'B'  => str_pad((string) (int) $customer->id, 8, '0', STR_PAD_LEFT),
+            'C'  => $nomAbrege,
+            'D'  => $libelleInterne,
+            'E'  => '',
+            'F'  => $raisonSociale,
             'G' => Tools::substr(trim((string) $address->address1), 0, 40),
             'H' => Tools::substr(trim((string) $address->address2), 0, 40),
             'I' => '',
