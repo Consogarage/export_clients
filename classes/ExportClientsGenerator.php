@@ -1,6 +1,6 @@
 <?php
 /**
- * Générateur d'export clients au format XLSM
+ * Générateur d'export clients au format LD Compta
  *
  * @author Consogarage
  * @copyright 2025 Consogarage
@@ -14,329 +14,229 @@ if (!defined('_PS_VERSION_')) {
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
-use PhpOffice\PhpSpreadsheet\Style\Font;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 
 class ExportClientsGenerator
 {
     /**
-     * Générer l'export XLSM pour un client
+     * Colonnes LD Compta (A–Y) avec leur largeur d'affichage
+     */
+    private static $columns = [
+        'A' => ['code' => 'TYPE', 'width' => 6],
+        'B' => ['code' => 'NOCL', 'width' => 10],
+        'C' => ['code' => 'NMCM', 'width' => 22],
+        'D' => ['code' => 'LIBI', 'width' => 42],
+        'E' => ['code' => 'TITR', 'width' => 6],
+        'F' => ['code' => 'RSSO', 'width' => 42],
+        'G' => ['code' => 'CAD1', 'width' => 42],
+        'H' => ['code' => 'CADR', 'width' => 42],
+        'I' => ['code' => 'NVOI', 'width' => 42],
+        'J' => ['code' => 'COPO', 'width' => 7],
+        'K' => ['code' => 'BUDI', 'width' => 42],
+        'L' => ['code' => 'CPAY', 'width' => 5],
+        'M' => ['code' => 'PAYS', 'width' => 32],
+        'N' => ['code' => 'NTEL', 'width' => 22],
+        'O' => ['code' => 'TLEX', 'width' => 22],
+        'P' => ['code' => 'TLPO', 'width' => 22],
+        'Q' => ['code' => 'TLCY', 'width' => 22],
+        'R' => ['code' => 'NINT', 'width' => 42],
+        'S' => ['code' => 'COMM', 'width' => 15],
+        'T' => ['code' => 'SIRE', 'width' => 16],
+        'U' => ['code' => 'RIBP', 'width' => 5],
+        'V' => ['code' => 'DOBQ', 'width' => 27],
+        'W' => ['code' => 'IBBQ', 'width' => 6],
+        'X' => ['code' => 'COBQ', 'width' => 7],
+        'Y' => ['code' => 'GUBQ', 'width' => 7],        'Z'  => ['code' => 'CPBQ', 'width' => 13],
+        'AA' => ['code' => 'CLBQ', 'width' => 11],
+        'AB' => ['code' => 'BIBQ', 'width' => 13],
+        'AC' => ['code' => 'MOPM', 'width' => 5],
+        'AD' => ['code' => 'DJPM', 'width' => 6],
+        'AE' => ['code' => 'DMPM', 'width' => 6],
+        'AF' => ['code' => 'REFM', 'width' => 5],    ];
+
+    /**
+     * Générer l'export LD Compta pour un seul client
      *
      * @param int $customerId
-     * @param int $orderId
-     * @return string|false Le chemin du fichier généré ou false en cas d'erreur
+     * @param int $addressId
+     * @return string Chemin du fichier généré
      */
-    public function generateExport($customerId, $orderId)
+    public function generateExport($customerId, $addressId)
     {
-        $customer = new Customer($customerId);
-        $order = new Order($orderId);
+        $customer = new Customer((int) $customerId);
+        $address = new Address((int) $addressId);
 
-        if (!Validate::isLoadedObject($customer) || !Validate::isLoadedObject($order)) {
-            throw new Exception('Client ou commande introuvable');
+        if (!Validate::isLoadedObject($customer) || !Validate::isLoadedObject($address)) {
+            throw new Exception('Client ou adresse introuvable');
         }
 
-        // Récupérer les adresses
-        $addressDelivery = new Address($order->id_address_delivery);
-        $addressInvoice = new Address($order->id_address_invoice);
-
-        // Créer le spreadsheet
-        $spreadsheet = new Spreadsheet();
+        $spreadsheet = $this->createSpreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
 
-        // Titre du document
-        $sheet->setTitle('Export Client');
+        $this->addHeaderRow($sheet);
+        $this->addCustomerRow($sheet, 2, $customer, $address);
+        $this->applyGeneralStyling($sheet, 2);
 
-        // Section Coordonnées
-        $this->addCoordinatesSection($sheet, $customer, $addressInvoice);
-
-        // Section Détail
-        $this->addDetailSection($sheet, $customer, $addressInvoice);
-
-        // Section Paiement
-        $this->addPaymentSection($sheet, $order, $customer);
-
-        // Style général
-        $this->applyGeneralStyling($sheet);
-
-        // Générer le nom du fichier
         $filename = $this->generateFilename($customer);
-        $exportDir = _PS_MODULE_DIR_ . 'export_clients/exports/';
+        $filePath = $this->getExportDir() . $filename;
 
-        if (!file_exists($exportDir)) {
-            mkdir($exportDir, 0755, true);
-        }
-
-        $filePath = $exportDir . $filename;
-
-        // Sauvegarder le fichier
-        $writer = new Xlsx($spreadsheet);
-        $writer->save($filePath);
+        (new Xlsx($spreadsheet))->save($filePath);
 
         return $filePath;
     }
 
     /**
-     * Ajouter la section Coordonnées
+     * Générer l'export LD Compta pour une liste de clients (par plage de dates)
+     *
+     * @param array  $pairs     [['id_customer' => x, 'id_address' => y], ...]
+     * @param string $dateFrom  YYYY-MM-DD
+     * @param string $dateTo    YYYY-MM-DD
+     * @return string Chemin du fichier généré
      */
-    private function addCoordinatesSection($sheet, $customer, $address)
+    public function generateBatchExport(array $pairs, $dateFrom = null, $dateTo = null)
     {
-        $row = 1;
+        $spreadsheet = $this->createSpreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
 
-        // Titre de section
-        $sheet->setCellValue("A{$row}", 'COORDONNÉES');
-        $this->applySectionTitleStyle($sheet, "A{$row}");
-        $row += 2;
+        $this->addHeaderRow($sheet);
 
-        // Titre (Civilité)
-        $gender = new Gender($customer->id_gender, Context::getContext()->language->id);
-        $sheet->setCellValue("A{$row}", 'Titre');
-        $sheet->setCellValue("B{$row}", $gender->name ? $gender->name : '');
-        $row++;
+        $row = 2;
+        foreach ($pairs as $pair) {
+            $customer = new Customer((int) $pair['id_customer']);
+            $address = new Address((int) $pair['id_address']);
+            if (Validate::isLoadedObject($customer) && Validate::isLoadedObject($address)) {
+                $this->addCustomerRow($sheet, $row, $customer, $address);
+                $row++;
+            }
+        }
 
-        // Raison sociale
-        $sheet->setCellValue("A{$row}", 'Raison sociale');
-        $sheet->setCellValue("B{$row}", $address->company ? $address->company : '');
-        $row++;
+        $this->applyGeneralStyling($sheet, max(2, $row - 1));
 
-        // Adresse
-        $sheet->setCellValue("A{$row}", 'Adresse');
-        $fullAddress = trim($address->address1 . ' ' . $address->address2);
-        $sheet->setCellValue("B{$row}", $fullAddress);
-        $row++;
+        $suffix = ($dateFrom && $dateTo)
+            ? '_' . str_replace('-', '', $dateFrom) . '_' . str_replace('-', '', $dateTo)
+            : '_' . date('Ymd');
+        $filePath = $this->getExportDir() . 'export_clients' . $suffix . '.xlsx';
 
-        // Code postal
-        $sheet->setCellValue("A{$row}", 'Code postal');
-        $sheet->setCellValue("B{$row}", $address->postcode);
-        $row++;
+        (new Xlsx($spreadsheet))->save($filePath);
 
-        // Ville
-        $sheet->setCellValue("A{$row}", 'Ville');
-        $sheet->setCellValue("B{$row}", $address->city);
-        $row++;
-
-        // Pays
-        $country = new Country($address->id_country, Context::getContext()->language->id);
-        $sheet->setCellValue("A{$row}", 'Pays');
-        $sheet->setCellValue("B{$row}", $country->name);
-        $row++;
-
-        // Téléphone
-        $sheet->setCellValue("A{$row}", 'Téléphone');
-        $sheet->setCellValue("B{$row}", $address->phone ? $address->phone : '');
-        $row++;
-
-        // Bureau (vide par défaut)
-        $sheet->setCellValue("A{$row}", 'Bureau');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // Télécopie (vide par défaut)
-        $sheet->setCellValue("A{$row}", 'Télécopie');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // Portable
-        $sheet->setCellValue("A{$row}", 'Portable');
-        $sheet->setCellValue("B{$row}", $address->phone_mobile ? $address->phone_mobile : '');
-        $row++;
-
-        // Adresse électronique (email)
-        $sheet->setCellValue("A{$row}", 'Adresse électronique');
-        $sheet->setCellValue("B{$row}", $customer->email);
-        $row++;
-
-        // Site web (vide par défaut)
-        $sheet->setCellValue("A{$row}", 'Site web');
-        $sheet->setCellValue("B{$row}", $address->website ? $address->website : '');
-        $row++;
-
-        return $row;
+        return $filePath;
     }
 
-    /**
-     * Ajouter la section Détail
-     */
-    private function addDetailSection($sheet, $customer, $address)
+    private function createSpreadsheet()
     {
-        $row = 15;
-
-        // Titre de section
-        $sheet->setCellValue("A{$row}", 'DÉTAIL');
-        $this->applySectionTitleStyle($sheet, "A{$row}");
-        $row += 2;
-
-        // Classification
-        $sheet->setCellValue("A{$row}", 'Classification');
-        $this->applySubSectionStyle($sheet, "A{$row}");
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Code groupe');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Code famille');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Collectif');
-        $sheet->setCellValue("B{$row}", '');
-        $row += 2;
-
-        // Renseignements complémentaires
-        $sheet->setCellValue("A{$row}", 'Renseignements complémentaires');
-        $this->applySubSectionStyle($sheet, "A{$row}");
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Numéro de SIRET');
-        $sheet->setCellValue("B{$row}", $address->dni ? $address->dni : '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Code NAF');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'N° TVA intracommunautaire');
-        $sheet->setCellValue("B{$row}", $address->vat_number ? $address->vat_number : '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'N° EDI');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Nom interlocuteur');
-        $sheet->setCellValue("B{$row}", $customer->firstname . ' ' . $customer->lastname);
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Commentaires');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        $sheet->setCellValue("A{$row}", 'Code TVA');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        return $row;
+        $spreadsheet = new Spreadsheet();
+        $spreadsheet->getActiveSheet()->setTitle('Tiers');
+        return $spreadsheet;
     }
 
-    /**
-     * Ajouter la section Paiement
-     */
-    private function addPaymentSection($sheet, $order, $customer)
+    private function addHeaderRow($sheet)
     {
-        $row = 35;
+        foreach (self::$columns as $col => $def) {
+            $sheet->setCellValue($col . '1', $def['code']);
+        }
 
-        // Titre de section
-        $sheet->setCellValue("A{$row}", 'PAIEMENT');
-        $this->applySectionTitleStyle($sheet, "A{$row}");
-        $row += 2;
+        $lastCol = array_key_last(self::$columns);
+        $range = 'A1:' . $lastCol . '1';
 
-        // Conditions de paiement
-        $sheet->setCellValue("A{$row}", 'Conditions de paiement');
-        $this->applySubSectionStyle($sheet, "A{$row}");
-        $row++;
-
-        // Mode de paiement
-        $sheet->setCellValue("A{$row}", 'Mode de paiement');
-        $sheet->setCellValue("B{$row}", $order->payment);
-        $row++;
-
-        // Délai de paiement
-        $sheet->setCellValue("A{$row}", 'Délai de paiement');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // Décalage
-        $sheet->setCellValue("A{$row}", 'Décalage');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // Type
-        $sheet->setCellValue("A{$row}", 'Type');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // Banque d'affectation
-        $sheet->setCellValue("A{$row}", 'Banque d\'affectation');
-        $sheet->setCellValue("B{$row}", '');
-        $row += 2;
-
-        // Coordonnées bancaires
-        $sheet->setCellValue("A{$row}", 'Coordonnées bancaires');
-        $this->applySubSectionStyle($sheet, "A{$row}");
-        $row++;
-
-        // Domiciliation
-        $sheet->setCellValue("A{$row}", 'Domiciliation');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // IBAN
-        $sheet->setCellValue("A{$row}", 'IBAN');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // RIB
-        $sheet->setCellValue("A{$row}", 'RIB');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        // Code BIC
-        $sheet->setCellValue("A{$row}", 'Code BIC');
-        $sheet->setCellValue("B{$row}", '');
-        $row++;
-
-        return $row;
-    }
-
-    /**
-     * Appliquer le style pour les titres de section
-     */
-    private function applySectionTitleStyle($sheet, $cell)
-    {
-        $sheet->getStyle($cell)->getFont()->setBold(true)->setSize(14);
-        $sheet->getStyle($cell)->getFill()
+        $sheet->getStyle($range)->getFont()->setBold(true);
+        $sheet->getStyle($range)->getFill()
             ->setFillType(Fill::FILL_SOLID)
             ->getStartColor()->setRGB('4472C4');
-        $sheet->getStyle($cell)->getFont()->getColor()->setRGB('FFFFFF');
+        $sheet->getStyle($range)->getFont()->getColor()->setRGB('FFFFFF');
     }
 
-    /**
-     * Appliquer le style pour les sous-sections
-     */
-    private function applySubSectionStyle($sheet, $cell)
+    private function addCustomerRow($sheet, $row, $customer, $address)
     {
-        $sheet->getStyle($cell)->getFont()->setBold(true)->setSize(11);
-        $sheet->getStyle($cell)->getFill()
-            ->setFillType(Fill::FILL_SOLID)
-            ->getStartColor()->setRGB('D9E1F2');
+        $country = new Country((int) $address->id_country);
+        $isoCode = Tools::strtoupper((string) $country->iso_code);
+        $countryName = (string) Country::getNameById(
+            (int) Context::getContext()->language->id,
+            (int) $address->id_country
+        );
+
+        $nomAbrege = Tools::strtoupper(
+            $address->company
+                ? Tools::substr((string) $address->company, 0, 20)
+                : Tools::substr($customer->lastname . ' ' . $customer->firstname, 0, 20)
+        );
+
+        $libelleInterne = Tools::strtoupper(
+            $address->company
+                ? Tools::substr((string) $address->company, 0, 40)
+                : Tools::substr($customer->lastname . ' ' . $customer->firstname, 0, 40)
+        );
+
+        $siret = $address->dni
+            ? Tools::substr(preg_replace('/\s+/', '', (string) $address->dni), 0, 14)
+            : '';
+
+        $values = [
+            'A' => 'C',
+            'B' => str_pad((string) (int) $customer->id, 8, '0', STR_PAD_LEFT),
+            'C' => $nomAbrege,
+            'D' => $libelleInterne,
+            'E' => '',
+            'F' => '',
+            'G' => Tools::substr(trim((string) $address->address1), 0, 40),
+            'H' => Tools::substr(trim((string) $address->address2), 0, 40),
+            'I' => '',
+            'J' => Tools::substr((string) $address->postcode, 0, 5),
+            'K' => Tools::substr((string) $address->city, 0, 40),
+            'L' => Tools::substr($isoCode, 0, 2),
+            'M' => Tools::substr($countryName, 0, 30),
+            'N' => Tools::substr((string) $address->phone, 0, 20),
+            'O' => '',
+            'P' => Tools::substr((string) $address->phone_mobile, 0, 20),
+            'Q' => '',
+            'R' => Tools::substr($customer->firstname . ' ' . $customer->lastname, 0, 40),
+            'S' => '',
+            'T' => $siret,
+            'U'  => '',
+            'V'  => '',
+            'W'  => '',
+            'X'  => '',
+            'Y'  => '',
+            'Z'  => '',
+            'AA' => '',
+            'AB' => '',
+            'AC' => 'TD',
+            'AD' => '30',
+            'AE' => '0',
+            'AF' => 'M',
+        ];
+
+        foreach ($values as $col => $value) {
+            $sheet->setCellValue($col . $row, $value);
+        }
     }
 
-    /**
-     * Appliquer le style général
-     */
-    private function applyGeneralStyling($sheet)
+    private function applyGeneralStyling($sheet, $lastRow)
     {
-        // Largeur des colonnes
-        $sheet->getColumnDimension('A')->setWidth(30);
-        $sheet->getColumnDimension('B')->setWidth(40);
+        foreach (self::$columns as $col => $def) {
+            $sheet->getColumnDimension($col)->setWidth($def['width']);
+        }
 
-        // Style des labels (colonne A)
-        $sheet->getStyle('A:A')->getFont()->setBold(true);
-        $sheet->getStyle('A:A')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
-
-        // Style des valeurs (colonne B)
-        $sheet->getStyle('B:B')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+        if ($lastRow >= 2) {
+            $lastCol = array_key_last(self::$columns);
+            $sheet->getStyle('A2:' . $lastCol . $lastRow)
+                ->getAlignment()
+                ->setHorizontal(Alignment::HORIZONTAL_LEFT);
+        }
     }
 
-    /**
-     * Générer le nom du fichier
-     */
+    private function getExportDir()
+    {
+        $dir = _PS_MODULE_DIR_ . 'export_clients/exports/';
+        if (!file_exists($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        return $dir;
+    }
+
     private function generateFilename($customer)
     {
         $date = date('Y-m-d');
-        $customerName = Tools::strtoupper(Tools::replaceAccentedChars($customer->lastname));
-        $customerId = $customer->id;
-
-        return "export_client_{$customerId}_{$customerName}_{$date}.xlsx";
+        $name = Tools::strtoupper(Tools::replaceAccentedChars((string) $customer->lastname));
+        return 'export_client_' . (int) $customer->id . '_' . $name . '_' . $date . '.xlsx';
     }
 }

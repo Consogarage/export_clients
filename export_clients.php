@@ -43,7 +43,7 @@ class Export_Clients extends Module
     {
         if (
             !parent::install() ||
-            !$this->registerHook('actionValidateOrder') ||
+            !$this->registerHook('actionObjectAddressAddAfter') ||
             !$this->installTab()
         ) {
             return false;
@@ -91,7 +91,7 @@ class Export_Clients extends Module
         foreach (Language::getLanguages(true) as $lang) {
             $tab->name[$lang['id_lang']] = 'Export Clients';
         }
-        $tab->id_parent = (int) Tab::getIdFromClassName('AdminParentOrders');
+        $tab->id_parent = (int) Tab::getIdFromClassName('AdminParentCustomer');
         $tab->module = $this->name;
 
         return $tab->add();
@@ -112,50 +112,52 @@ class Export_Clients extends Module
     }
 
     /**
-     * Hook exécuté lors de la validation d'une commande
+     * Hook exécuté lors de la création d'une adresse
      *
      * @param array $params
      */
-    public function hookActionValidateOrder($params)
+    public function hookActionObjectAddressAddAfter($params)
     {
-        if (!isset($params['order']) || !isset($params['customer'])) {
+        if (!isset($params['object'])) {
             return;
         }
 
-        $order = $params['order'];
-        $customer = $params['customer'];
+        $address = $params['object'];
 
-        // Vérifier si c'est la première commande du client
-        if ($this->isFirstOrder($customer->id)) {
+        if (!$address->id_customer) {
+            return;
+        }
+
+        // Vérifier si c'est la première adresse du client
+        if ($this->isFirstAddress($address->id_customer)) {
             try {
                 $generator = new ExportClientsGenerator();
-                $generator->generateExport($customer->id, $order->id);
+                $generator->generateExport($address->id_customer, $address->id);
             } catch (Exception $e) {
                 PrestaShopLogger::addLog(
                     'Export Clients: Erreur lors de la génération de l\'export - ' . $e->getMessage(),
                     3,
                     null,
                     'Customer',
-                    $customer->id
+                    $address->id_customer
                 );
             }
         }
     }
 
     /**
-     * Vérifier si c'est la première commande du client
+     * Vérifier si c'est la première adresse du client
      *
      * @param int $customerId
      * @return bool
      */
-    private function isFirstOrder($customerId)
+    private function isFirstAddress($customerId)
     {
         $sql = new DbQuery();
         $sql->select('COUNT(*)');
-        $sql->from('orders');
+        $sql->from('address');
         $sql->where('id_customer = ' . (int) $customerId);
-        $sql->where('current_state != ' . (int) Configuration::get('PS_OS_CANCELED'));
-        $sql->where('current_state != ' . (int) Configuration::get('PS_OS_ERROR'));
+        $sql->where('deleted = 0');
 
         return (int) Db::getInstance()->getValue($sql) === 1;
     }
