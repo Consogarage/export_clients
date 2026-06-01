@@ -12,12 +12,116 @@ if (!defined('_PS_VERSION_')) {
 }
 
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Settings;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
+
+class ExportClientsFileCache implements \Psr\SimpleCache\CacheInterface
+{
+    private $directory;
+
+    public function __construct($directory)
+    {
+        $this->directory = rtrim($directory, DIRECTORY_SEPARATOR);
+
+        if (!is_dir($this->directory) && !mkdir($this->directory, 0755, true) && !is_dir($this->directory)) {
+            throw new Exception('Impossible de créer le cache disque de l\'export.');
+        }
+    }
+
+    public function clear()
+    {
+        foreach (glob($this->directory . DIRECTORY_SEPARATOR . '*.cache') ?: [] as $filePath) {
+            if (is_file($filePath)) {
+                @unlink($filePath);
+            }
+        }
+
+        @rmdir($this->directory);
+
+        return true;
+    }
+
+    public function delete($key)
+    {
+        $filePath = $this->getFilePath($key);
+        if (is_file($filePath)) {
+            @unlink($filePath);
+        }
+
+        return true;
+    }
+
+    public function deleteMultiple($keys)
+    {
+        foreach ($keys as $key) {
+            $this->delete($key);
+        }
+
+        return true;
+    }
+
+    public function get($key, $default = null)
+    {
+        $filePath = $this->getFilePath($key);
+        if (!is_file($filePath)) {
+            return $default;
+        }
+
+        $value = @file_get_contents($filePath);
+        if ($value === false) {
+            return $default;
+        }
+
+        return unserialize($value);
+    }
+
+    public function getMultiple($keys, $default = null)
+    {
+        $results = [];
+        foreach ($keys as $key) {
+            $results[$key] = $this->get($key, $default);
+        }
+
+        return $results;
+    }
+
+    public function has($key)
+    {
+        return is_file($this->getFilePath($key));
+    }
+
+    public function set($key, $value, $ttl = null)
+    {
+        $filePath = $this->getFilePath($key);
+
+        return file_put_contents($filePath, serialize($value), LOCK_EX) !== false;
+    }
+
+    public function setMultiple($values, $ttl = null)
+    {
+        foreach ($values as $key => $value) {
+            if (!$this->set($key, $value, $ttl)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function getFilePath($key)
+    {
+        return $this->directory . DIRECTORY_SEPARATOR . sha1((string) $key) . '.cache';
+    }
+}
 
 class ExportClientsGenerator
 {
+    private $cellCache;
+
     /**
      * Colonnes LD Compta (A–Y) avec leur largeur d'affichage
      */
@@ -124,7 +228,7 @@ class ExportClientsGenerator
         $filename = $this->generateFilename($customer);
         $filePath = $this->getExportDir() . $filename;
 
-        (new Xlsx($spreadsheet))->save($filePath);
+        $this->saveSpreadsheet($spreadsheet, $filePath);
 
         return $filePath;
     }
@@ -161,16 +265,47 @@ class ExportClientsGenerator
             : '_' . date('Ymd');
         $filePath = $this->getExportDir() . 'export_clients' . $suffix . '.xlsx';
 
-        (new Xlsx($spreadsheet))->save($filePath);
+        $this->saveSpreadsheet($spreadsheet, $filePath);
 
         return $filePath;
     }
 
     private function createSpreadsheet()
     {
+        $this->initializeCellCache();
+
         $spreadsheet = new Spreadsheet();
         $spreadsheet->getActiveSheet()->setTitle('Tiers');
+
         return $spreadsheet;
+    }
+
+    private function initializeCellCache()
+    {
+        if ($this->cellCache instanceof ExportClientsFileCache) {
+            $this->cellCache->clear();
+        }
+
+        $cacheDir = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'export_clients_cache_' . uniqid('', true);
+        $this->cellCache = new ExportClientsFileCache($cacheDir);
+        Settings::setCache($this->cellCache);
+    }
+
+    private function saveSpreadsheet(Spreadsheet $spreadsheet, $filePath)
+    {
+        $writer = new Xlsx($spreadsheet);
+
+        try {
+            $writer->save($filePath);
+        } finally {
+            $spreadsheet->disconnectWorksheets();
+            unset($writer, $spreadsheet);
+
+            if ($this->cellCache instanceof ExportClientsFileCache) {
+                $this->cellCache->clear();
+                $this->cellCache = null;
+            }
+        }
     }
 
     private function addHeaderRow($sheet)
@@ -218,7 +353,7 @@ class ExportClientsGenerator
             ? Tools::strtoupper(Tools::substr((string) $address->company, 0, 40))
             : '';
 
-        $mopm = in_array(4, $customer->getGroups()) ? 'TD' : 'CPT';
+        $mopm = in_array(4, $customer->getGroups()) ? 'TD' : 'CB';
 
         $values = [
             'A'  => 'C',
@@ -253,7 +388,7 @@ class ExportClientsGenerator
             'AD' => $mopm === 'TD' ? '30' : '0',
             'AE' => '',
             'AF' => '',
-            'AG' => 'o',
+            'AG' => 'O',
             'AH' => '',
             'AI' => '',
             'AJ' => '',
@@ -298,6 +433,15 @@ class ExportClientsGenerator
         ];
 
         foreach ($values as $col => $value) {
+            if ($value === '' || $value === null) {
+                continue;
+            }
+
+            if ($col === 'T') {
+                $sheet->setCellValueExplicit($col . $row, (string) $value, DataType::TYPE_STRING);
+                continue;
+            }
+
             $sheet->setCellValue($col . $row, $value);
         }
     }
@@ -307,6 +451,8 @@ class ExportClientsGenerator
         foreach (self::$columns as $col => $def) {
             $sheet->getColumnDimension($col)->setWidth($def['width']);
         }
+
+        $sheet->getStyle('T:T')->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
 
         if ($lastRow >= 2) {
             $lastCol = array_key_last(self::$columns);

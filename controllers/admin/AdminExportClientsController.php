@@ -122,6 +122,8 @@ class AdminExportClientsController extends ModuleAdminController
 
     private function runExport($dateFrom, $dateTo)
     {
+        $this->ensureExportMemoryLimit();
+
         $customers = $this->getCustomers($dateFrom, $dateTo);
 
         if (empty($customers)) {
@@ -159,6 +161,43 @@ class AdminExportClientsController extends ModuleAdminController
             $this->errors[] = $this->l('Erreur : ') . $e->getMessage();
             PrestaShopLogger::addLog('Export Clients: ' . $e->getMessage(), 3);
         }
+    }
+
+    private function ensureExportMemoryLimit()
+    {
+        $currentLimit = ini_get('memory_limit');
+        if ($currentLimit === false || $currentLimit === '' || $currentLimit === '-1') {
+            return;
+        }
+
+        $currentBytes = $this->convertPhpSizeToBytes($currentLimit);
+        $targetBytes = 512 * 1024 * 1024;
+
+        if ($currentBytes > 0 && $currentBytes < $targetBytes) {
+            @ini_set('memory_limit', '512M');
+        }
+    }
+
+    private function convertPhpSizeToBytes($value)
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return 0;
+        }
+
+        $unit = Tools::strtoupper(Tools::substr($value, -1));
+        $bytes = (int) $value;
+
+        switch ($unit) {
+            case 'G':
+                $bytes *= 1024;
+            case 'M':
+                $bytes *= 1024;
+            case 'K':
+                $bytes *= 1024;
+        }
+
+        return $bytes;
     }
 
     private function getCustomers($dateFrom, $dateTo)
