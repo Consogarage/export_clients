@@ -357,7 +357,7 @@ class ExportClientsGenerator
 
         $values = [
             'A'  => 'C',
-            'B'  => str_pad((string) (int) $customer->id, 8, '0', STR_PAD_LEFT),
+            'B'  => (string) (800000 + (int) $customer->id),
             'C'  => $nomAbrege,
             'D'  => $libelleInterne,
             'E'  => '',
