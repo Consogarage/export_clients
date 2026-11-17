@@ -4,8 +4,7 @@
     "type": "prestashop-module",
     "license": "proprietary",
     "require": {
-        "php": ">=7.2",
-        "phpoffice/phpspreadsheet": "^1.29"
+        "php": ">=7.2"
     },
     "autoload": {
         "psr-4": {
